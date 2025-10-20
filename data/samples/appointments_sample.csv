@@ -1,0 +1,4 @@
+start_time,end_time,service,staff,customer,branch,notes,amount
+2025-01-01 10:00:00,2025-01-01 11:00:00,Facial,Nadia,Sara,Main,Relaxing facial,2500
+2025-01-01 11:30:00,2025-01-01 12:00:00,Haircut,Usman,Ali,Branch-A,Men haircut,800
+

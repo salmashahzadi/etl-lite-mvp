@@ -1,0 +1,5 @@
+date,product_name,quantity,unit_price,amount,customer,staff,category,branch
+2025-01-01 10:00:00,Shampoo,2,500,1000,Ayesha,Kiran,Hair,Main
+2025-01-01 11:30:00,Facial,1,2500,2500,Sara,Nadia,Spa,Main
+2025-01-02 15:00:00,Haircut,1,800,800,Ali,Usman,Hair,Branch-A
+

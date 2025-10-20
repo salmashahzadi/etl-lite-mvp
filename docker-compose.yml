@@ -1,0 +1,26 @@
+version: "3.9"
+services:
+  api:
+    build: .
+    environment:
+      - WAREHOUSE_PATH=/data/etl_lite.duckdb
+      - API_TOKEN=${API_TOKEN:-changeme}
+      - APP_TZ=${APP_TZ:-Asia/Karachi}
+    volumes:
+      - ./warehouse:/data
+      - ./.env:/app/.env:ro
+    ports:
+      - "8000:8000"
+
+  app:
+    build: .
+    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+    environment:
+      - WAREHOUSE_PATH=/data/etl_lite.duckdb
+      - APP_TZ=${APP_TZ:-Asia/Karachi}
+    volumes:
+      - ./warehouse:/data
+      - ./.env:/app/.env:ro
+    ports:
+      - "8501:8501"
+

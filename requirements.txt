@@ -1,0 +1,14 @@
+streamlit==1.38.0
+pandas==2.2.3
+duckdb==1.1.0
+plotly==5.23.0
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.9   # PostgreSQL
+pymysql==1.1.1           # MySQL
+openpyxl
+python-dotenv==1.0.1
+twilio==9.2.3
+requests==2.32.3
+fastapi==0.115.0
+uvicorn==0.30.6
+python-multipart==0.0.9

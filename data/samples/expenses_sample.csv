@@ -1,0 +1,5 @@
+date,expense_category,amount,vendor,branch,notes
+2025-01-01,Rent,50000,Landlord,Main,Monthly rent
+2025-01-01,Utilities,8000,KE,Main,Electricity bill
+2025-01-02,Supplies,3500,Wholesale,Branch-A,Consumables
+
