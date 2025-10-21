@@ -1,0 +1,5 @@
+date,customer,product,quantity,price
+2025-01-01,Alice,Apples,10,2.5
+2025-01-02,Bob,Bananas,8,1.2
+2025-01-03,Clara,Cherries,5,3.0
+2025-01-04,David,Dates,12,4.0

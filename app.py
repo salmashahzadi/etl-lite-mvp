@@ -12,13 +12,21 @@ from etl.schema import ENTITY_SPECS
 from etl.load import safe_load_to_duckdb
 
 # ------------------------------------------------------------
-# 💬 Toast Notification Utility
+# 💬 Toast Notification Utility (icon-free for success/warning)
 # ------------------------------------------------------------
 def toast(msg, type="info", delay=3):
-    colors = {"success": "#16a34a", "error": "#dc2626",
-              "warning": "#f59e0b", "info": "#2563eb"}
-    icon = {"success": "✅", "error": "❌",
-            "warning": "⚠️", "info": "💡"}.get(type, "💬")
+    colors = {
+        "success": "#16a34a",
+        "error": "#dc2626",
+        "warning": "#f59e0b",
+        "info": "#2563eb"
+    }
+    icons = {
+        "error": "❌",
+        "info": "💡"
+    }
+    icon = icons.get(type, "")  # no icons for success/warning
+
     html = f"""
     <div style="
         position:fixed;bottom:30px;right:30px;
@@ -27,7 +35,7 @@ def toast(msg, type="info", delay=3):
         box-shadow:0 2px 8px rgba(0,0,0,0.3);
         z-index:9999;font-size:15px;
         animation:fadein 0.3s, fadeout 0.5s {delay}s forwards;">
-        {icon}&nbsp;&nbsp;{msg}
+        {icon} {msg}
     </div>
     <style>
     @keyframes fadein {{from{{opacity:0;}}to{{opacity:1;}}}}
@@ -39,8 +47,8 @@ def toast(msg, type="info", delay=3):
 # ------------------------------------------------------------
 # 🎨 Page Setup
 # ------------------------------------------------------------
-st.set_page_config(page_title="ETL Lite v1.1", layout="wide", page_icon="💾")
-st.title("💾 ETL Lite MVP — Universal Data Loader & Dashboard")
+st.set_page_config(page_title="ETL Lite v1.3", layout="wide", page_icon="🟧")
+st.title("🟧 ETL Lite MVP — Universal Data Loader & Dashboard")
 
 if APP_PASSWORD:
     if "_pw_ok" not in st.session_state:
@@ -106,7 +114,7 @@ with tabs[0]:
         con.execute("CREATE SCHEMA IF NOT EXISTS etl;")
         safe_load_to_duckdb(sdf, "etl.sales")
         con.close()
-        toast("Sample Sales Data Loaded ✅", "success")
+        toast("Sample Sales Data Loaded", "success")
         st.dataframe(sdf.head())
     if c2.button("Load Expenses Sample"):
         edf = pd.read_csv("data/samples/expenses_sample.csv")
@@ -114,7 +122,7 @@ with tabs[0]:
         con.execute("CREATE SCHEMA IF NOT EXISTS etl;")
         safe_load_to_duckdb(edf, "etl.expenses")
         con.close()
-        toast("Expenses Data Inserted ✅", "success")
+        toast("Expenses Data Inserted", "success")
         st.dataframe(edf.head())
     if c3.button("Load Appointments Sample"):
         adf = pd.read_csv("data/samples/appointments_sample.csv")
@@ -122,25 +130,29 @@ with tabs[0]:
         con.execute("CREATE SCHEMA IF NOT EXISTS etl;")
         safe_load_to_duckdb(adf, "etl.appointments")
         con.close()
-        toast("Appointments Sample Loaded ✅", "success")
+        toast("Appointments Sample Loaded", "success")
         st.dataframe(adf.head())
 
 # ------------------------------------------------------------
-# 📂 Data Ingestion
+# 📂 Data Ingestion (MySQL + PostgreSQL + Snowflake)
 # ------------------------------------------------------------
 with tabs[1]:
     st.header("📂 Data Ingestion")
     src = st.radio("Select Data Source",
-                   ["Upload File", "Google Sheets URL", "Database (MySQL / PostgreSQL)"])
+                   ["Upload File", "Google Sheets URL", "Database (MySQL / PostgreSQL / Snowflake)"])
     df = None
+
+    # ---- Upload CSV/Excel ----
     if src == "Upload File":
         up = st.file_uploader("Upload CSV or Excel file", type=["csv", "xlsx"])
         if up:
             if up.size > MAX_UPLOAD_MB * 1024 * 1024:
                 toast(f"File too large (max {MAX_UPLOAD_MB} MB)", "error"); st.stop()
             df = pd.read_csv(up) if up.name.endswith(".csv") else pd.read_excel(up)
-            toast(f"✅ Loaded {len(df)} rows from {up.name}", "success")
+            toast(f"Loaded {len(df)} rows from {up.name}", "success")
             st.dataframe(df.head())
+
+    # ---- Google Sheets ----
     elif src == "Google Sheets URL":
         url = st.text_input("Paste Google Sheet link (Anyone→Viewer)")
         if url:
@@ -149,13 +161,88 @@ with tabs[1]:
                 url = f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv"
             try:
                 df = pd.read_csv(url)
-                toast(f"✅ Loaded {len(df)} rows from Google Sheets", "success")
+                toast(f"Loaded {len(df)} rows from Google Sheets", "success")
                 st.dataframe(df.head())
             except Exception as e:
-                toast(f"❌ Could not load Google Sheet – {e}", "error")
-    else:
-        st.info("Database connections coming soon (you can use file uploads for now).")
+                toast(f"Could not load Google Sheet – {e}", "error")
 
+    # ---- Database Simplified ----
+    elif src == "Database (MySQL / PostgreSQL / Snowflake)":
+        st.subheader("🔗 Connect to your database (no coding needed)")
+        db_type = st.selectbox("Select Database Type", ["MySQL", "PostgreSQL", "Snowflake"])
+
+        if db_type == "Snowflake":
+            account = st.text_input("Account (e.g. xy12345.eu-west-1)")
+            user = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            warehouse = st.text_input("Warehouse name")
+            database = st.text_input("Database name")
+            schema = st.text_input("Schema", "PUBLIC")
+        else:
+            host = st.text_input("Host", "localhost")
+            user = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            database = st.text_input("Database name")
+
+        if st.button("Connect to Database"):
+            try:
+                if db_type == "MySQL":
+                    from sqlalchemy import create_engine
+                    engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}/{database}")
+                elif db_type == "PostgreSQL":
+                    from sqlalchemy import create_engine
+                    engine = create_engine(f"postgresql+psycopg2://{user}:{password}@{host}/{database}")
+                else:  # Snowflake
+                    import snowflake.connector
+                    con = snowflake.connector.connect(
+                        user=user,
+                        password=password,
+                        account=account,
+                        warehouse=warehouse,
+                        database=database,
+                        schema=schema,
+                    )
+                    tables = pd.read_sql("SHOW TABLES", con)
+                    st.session_state["sf_con"] = con
+                    st.session_state["tables"] = tables["name"].tolist()
+                    toast("Connected to Snowflake", "success")
+                    con.close()
+                    st.stop()
+
+                if db_type != "Snowflake":
+                    tables = pd.read_sql(
+                        "SELECT table_name FROM information_schema.tables WHERE table_schema NOT IN ('information_schema', 'pg_catalog')",
+                        engine
+                    )
+                    st.session_state["engine"] = engine
+                    st.session_state["tables"] = tables["table_name"].tolist()
+                    toast(f"Connected to {db_type}", "success")
+
+            except Exception as e:
+                toast(f"Connection failed – {e}", "error")
+
+        if "tables" in st.session_state:
+            table = st.selectbox("Select a table to preview", st.session_state["tables"])
+            if st.button("Preview Table"):
+                try:
+                    if db_type == "Snowflake":
+                        con = snowflake.connector.connect(
+                            user=user, password=password, account=account,
+                            warehouse=warehouse, database=database, schema=schema
+                        )
+                        df = pd.read_sql(f'SELECT * FROM "{schema}"."{table}" LIMIT 100', con)
+                        con.close()
+                    else:
+                        df = pd.read_sql(f"SELECT * FROM {table} LIMIT 100", st.session_state["engine"])
+
+                    st.session_state["df"] = df
+                    st.dataframe(df.head())
+                    toast(f"Loaded {len(df)} rows from {table}", "success")
+
+                except Exception as e:
+                    toast(f"Error previewing table – {e}", "error")
+
+    # ---- Transform, Validate, Load ----
     if df is not None:
         st.divider()
         entity = st.selectbox("Select entity", list(ENTITY_SPECS.keys()))
@@ -166,13 +253,13 @@ with tabs[1]:
                 tdf = transform_with_mapping(df.copy(), entity, mapping)
                 tdf, errs = validate_dataframe(entity, tdf)
                 if errs:
-                    toast("⚠️ Validation issues found", "warning")
+                    toast("Validation issues found", "warning")
                     st.json(summarize_errors(errs))
                 else:
-                    toast("✅ Validation Passed", "success")
+                    toast("Validation Passed", "success")
                 safe_load_to_duckdb(tdf, f"etl.{entity}")
                 st.session_state["df"] = tdf
-                toast(f"✅ Loaded {len(tdf)} rows into etl.{entity}", "success")
+                toast(f"Loaded {len(tdf)} rows into etl.{entity}", "success")
 
 # ------------------------------------------------------------
 # 📊 Dashboard
@@ -216,7 +303,7 @@ with tabs[3]:
             tables = con.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema='etl';").fetchdf()
             if "sales" not in tables["table_name"].tolist():
-                toast("⚠️ No saved sales data found", "warning")
+                toast("No saved sales data found", "warning")
             else:
                 where, params = [], []
                 if start: where.append("date::date >= ?"); params.append(start)
@@ -227,14 +314,14 @@ with tabs[3]:
                 avg = con.execute(
                     f"SELECT COALESCE(AVG(amount),0) FROM etl.sales{ws}", params).fetchone()[0]
                 if total == 0:
-                    toast("⚠️ Sales table found but no data", "warning")
+                    toast("Sales table found but no data", "warning")
                 else:
                     st.metric("💰 Total Revenue", f"PKR {total:,.0f}")
                     st.metric("🧾 Avg Bill", f"PKR {avg:,.0f}")
-                    toast("✅ Warehouse metrics loaded", "success")
+                    toast("Warehouse metrics loaded", "success")
             con.close()
         except Exception as e:
-            toast(f"❌ Database error – {e}", "error")
+            toast(f"Database error – {e}", "error")
     else:
         df = st.session_state["df"]
         amt_col = next((c for c in ["amount", "total"] if c in df.columns), None)
@@ -265,7 +352,7 @@ with tabs[4]:
         "SELECT table_name FROM information_schema.tables WHERE table_schema='etl';").fetchdf()
     con.close()
     if "sales" not in tables["table_name"].tolist():
-        toast("⚠️ No saved sales data found", "warning"); st.stop()
+        toast("No saved sales data found", "warning"); st.stop()
 
     cards = q("""
         WITH ranges AS (
@@ -283,7 +370,7 @@ with tabs[4]:
         col1.metric("MTD Sales", f"PKR {cards['mtd'][0]:,.0f}")
         col2.metric("QTD Sales", f"PKR {cards['qtd'][0]:,.0f}")
         col3.metric("YTD Sales", f"PKR {cards['ytd'][0]:,.0f}")
-        toast("✅ Metrics calculated successfully", "success")
+        toast("Metrics calculated successfully", "success")
 
     trend = q("""
         SELECT date_trunc('week', date)::date AS week, SUM(amount) AS total
