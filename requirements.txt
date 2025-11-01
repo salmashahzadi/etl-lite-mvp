@@ -1,15 +1,26 @@
+# --- Core Frameworks ---
 streamlit==1.38.0
-pandas==2.2.3
-duckdb==1.1.0
-plotly==5.23.0
-sqlalchemy==2.0.35
-psycopg2-binary==2.9.9   # PostgreSQL
-pymysql==1.1.1           # MySQL
-openpyxl
-python-dotenv==1.0.1
-twilio==9.2.3
-requests==2.32.3
 fastapi==0.115.0
 uvicorn==0.30.6
 python-multipart==0.0.9
-snowflake-connector-python
+python-dotenv==1.0.1
+
+# --- Data & Analytics ---
+pandas==2.1.4
+numpy==1.26.4
+duckdb==1.1.0
+plotly==5.23.0
+sqlalchemy==2.0.35
+
+# --- Database Drivers ---
+psycopg2-binary==2.9.9     # PostgreSQL
+pymysql==1.1.1             # MySQL
+snowflake-connector-python==3.10.0
+
+# --- File I/O & Utils ---
+openpyxl==3.1.5
+pillow==10.3.0
+requests==2.32.3
+
+# --- Optional Integrations ---
+twilio==9.2.3
