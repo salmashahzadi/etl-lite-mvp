@@ -1,0 +1,9 @@
+# Python virtual environments
+venv/
+.venv/
+env/
+ENV/
+etl/__pycache__/*
+etl/__pycache__/__init__.cpython-312.pyc
+etl/__pycache__/__init__.cpython-312.pyc
+etl/__pycache__/utils.cpython-312.pyc
