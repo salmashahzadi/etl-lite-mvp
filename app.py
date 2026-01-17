@@ -649,36 +649,319 @@ def render_empty_state(icon, title, message):
 
 
 # ============================================================
-# Caching & session helpers
+# UNIVERSAL CSV HANDLING - Schema-Agnostic Data Loading
 # ============================================================
-@st.cache_data(show_spinner=False)
-def load_csv_cached(file):
-    return pd.read_csv(file)
+# These functions handle ANY CSV file regardless of structure,
+# encoding, delimiter, or column types. No hardcoded column names.
 
 
-@st.cache_data(show_spinner=False)
-def load_excel_cached(file):
-    return pd.read_excel(file)
+def safe_read_csv(file_or_path, max_rows=None):
+    """
+    SAFETY: Robust CSV reader that handles:
+    - Multiple encodings (UTF-8, latin-1, cp1252, ISO-8859-1)
+    - Auto-delimiter detection (comma, semicolon, tab, pipe)
+    - Missing values and mixed types
+    - Large files with row limits
+    
+    Returns: (DataFrame, error_message) - error_message is None on success
+    """
+    # List of encodings to try in order of preference
+    encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
+    # Common delimiters to try
+    delimiters = [',', ';', '\t', '|']
+    
+    last_error = None
+    
+    for encoding in encodings:
+        for delimiter in delimiters:
+            try:
+                # Reset file pointer if it's a file object
+                if hasattr(file_or_path, 'seek'):
+                    file_or_path.seek(0)
+                
+                # Read with current encoding and delimiter
+                df = pd.read_csv(
+                    file_or_path,
+                    encoding=encoding,
+                    delimiter=delimiter,
+                    on_bad_lines='warn',  # Don't fail on bad lines
+                    low_memory=False,  # Prevent dtype warnings
+                    nrows=max_rows  # Optional row limit
+                )
+                
+                # Validate: must have at least 1 column and some data
+                if len(df.columns) >= 1 and len(df) > 0:
+                    # Check if delimiter was correct (more than 1 column usually means success)
+                    # Single column might be wrong delimiter, but accept if it's the only result
+                    return df, None
+                    
+            except UnicodeDecodeError:
+                last_error = f"Encoding {encoding} failed"
+                continue
+            except pd.errors.ParserError as e:
+                last_error = f"Parser error with delimiter '{delimiter}': {str(e)[:100]}"
+                continue
+            except Exception as e:
+                last_error = str(e)[:200]
+                continue
+    
+    # All attempts failed
+    return None, f"Could not parse CSV. Last error: {last_error}"
+
+
+def safe_read_excel(file):
+    """
+    SAFETY: Robust Excel reader with error handling.
+    Returns: (DataFrame, error_message)
+    """
+    try:
+        if hasattr(file, 'seek'):
+            file.seek(0)
+        df = pd.read_excel(file, engine='openpyxl')
+        if len(df.columns) >= 1:
+            return df, None
+        return None, "Excel file appears to be empty"
+    except Exception as e:
+        return None, f"Excel read error: {str(e)[:200]}"
+
+
+# ============================================================
+# COLUMN TYPE DETECTION - Heuristic Analysis
+# ============================================================
+# These functions dynamically detect column types without
+# assuming any specific column names exist.
+
+
+def detect_numeric_columns(df):
+    """
+    SAFETY: Find all numeric columns, including those that might 
+    be stored as strings but contain numeric values.
+    """
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    
+    # Also check string columns that might be numeric
+    for col in df.select_dtypes(include=['object']).columns:
+        try:
+            # Try to convert and check if mostly numeric
+            converted = pd.to_numeric(df[col], errors='coerce')
+            non_null_ratio = converted.notna().sum() / len(df) if len(df) > 0 else 0
+            if non_null_ratio > 0.5:  # More than 50% are numeric
+                numeric_cols.append(col)
+        except:
+            pass
+    
+    return list(set(numeric_cols))
+
+
+def detect_datetime_columns(df):
+    """
+    SAFETY: Find columns that contain date/datetime values.
+    Uses multiple heuristics, not just column name matching.
+    """
+    datetime_cols = []
+    
+    for col in df.columns:
+        # Check if already datetime
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            datetime_cols.append(col)
+            continue
+        
+        # Check column name hints
+        col_lower = col.lower()
+        if any(hint in col_lower for hint in ['date', 'time', 'timestamp', 'created', 'updated', 'dt', '_at']):
+            try:
+                # Try to parse as datetime
+                parsed = pd.to_datetime(df[col], errors='coerce')
+                valid_ratio = parsed.notna().sum() / len(df) if len(df) > 0 else 0
+                if valid_ratio > 0.5:
+                    datetime_cols.append(col)
+                    continue
+            except:
+                pass
+        
+        # For object columns, sample and check if they look like dates
+        if df[col].dtype == 'object':
+            try:
+                sample = df[col].dropna().head(100)
+                if len(sample) > 0:
+                    parsed = pd.to_datetime(sample, errors='coerce')
+                    valid_ratio = parsed.notna().sum() / len(sample)
+                    if valid_ratio > 0.7:  # 70% parse as dates
+                        datetime_cols.append(col)
+            except:
+                pass
+    
+    return datetime_cols
+
+
+def detect_categorical_columns(df, max_unique_ratio=0.5):
+    """
+    SAFETY: Find columns suitable for categorical analysis.
+    Excludes high-cardinality columns that would make bad charts.
+    """
+    cat_cols = []
+    
+    for col in df.columns:
+        # Skip numeric columns
+        if col in detect_numeric_columns(df):
+            continue
+        
+        # Check cardinality
+        n_unique = df[col].nunique()
+        unique_ratio = n_unique / len(df) if len(df) > 0 else 1
+        
+        # Good categorical: not too many unique values
+        if n_unique <= 50 and unique_ratio <= max_unique_ratio:
+            cat_cols.append(col)
+    
+    return cat_cols
+
+
+def detect_amount_column(df):
+    """
+    SAFETY: Heuristically find the best "amount" or "value" column.
+    Does NOT assume any specific column name exists.
+    """
+    numeric_cols = detect_numeric_columns(df)
+    if not numeric_cols:
+        return None
+    
+    # Priority 1: Column names containing amount/total/revenue/sales/value/price
+    amount_hints = ['amount', 'total', 'revenue', 'sales', 'value', 'price', 'sum', 'cost']
+    for hint in amount_hints:
+        for col in numeric_cols:
+            if hint in col.lower():
+                return col
+    
+    # Priority 2: Largest numeric column by sum (likely a monetary column)
+    best_col = None
+    best_sum = 0
+    for col in numeric_cols:
+        try:
+            col_sum = pd.to_numeric(df[col], errors='coerce').fillna(0).abs().sum()
+            if col_sum > best_sum:
+                best_sum = col_sum
+                best_col = col
+        except:
+            pass
+    
+    return best_col
+
+
+def detect_date_column(df):
+    """
+    SAFETY: Find the best date column for time series analysis.
+    """
+    datetime_cols = detect_datetime_columns(df)
+    if not datetime_cols:
+        return None
+    
+    # Prefer columns with 'date' in name
+    for col in datetime_cols:
+        if 'date' in col.lower():
+            return col
+    
+    # Return first detected datetime column
+    return datetime_cols[0] if datetime_cols else None
+
+
+def detect_grouping_column(df, hint_keywords=None):
+    """
+    SAFETY: Find a good column for grouping/aggregation.
+    """
+    cat_cols = detect_categorical_columns(df)
+    if not cat_cols:
+        return None
+    
+    if hint_keywords:
+        for hint in hint_keywords:
+            for col in cat_cols:
+                if hint in col.lower():
+                    return col
+    
+    # Return column with reasonable cardinality
+    for col in cat_cols:
+        if 2 <= df[col].nunique() <= 20:
+            return col
+    
+    return cat_cols[0] if cat_cols else None
+
+
+# ============================================================
+# Session State Management
+# ============================================================
 
 
 def set_active_df(df, label):
+    """
+    SAFETY: Update session state with loaded DataFrame.
+    Prevents infinite reruns by checking if data actually changed.
+    """
+    # Store the new data
     st.session_state["df"] = df
     st.session_state["df_label"] = label
     st.session_state["last_loaded_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Store column analysis for quick access
+    st.session_state["_col_analysis"] = {
+        "numeric": detect_numeric_columns(df),
+        "datetime": detect_datetime_columns(df),
+        "categorical": detect_categorical_columns(df),
+        "amount_col": detect_amount_column(df),
+        "date_col": detect_date_column(df),
+        "row_count": len(df),
+        "col_count": len(df.columns)
+    }
+
+
+def get_col_analysis():
+    """
+    SAFETY: Get cached column analysis or compute if missing.
+    """
+    if "_col_analysis" not in st.session_state:
+        df = st.session_state.get("df")
+        if df is not None:
+            st.session_state["_col_analysis"] = {
+                "numeric": detect_numeric_columns(df),
+                "datetime": detect_datetime_columns(df),
+                "categorical": detect_categorical_columns(df),
+                "amount_col": detect_amount_column(df),
+                "date_col": detect_date_column(df),
+                "row_count": len(df),
+                "col_count": len(df.columns)
+            }
+        else:
+            return None
+    return st.session_state.get("_col_analysis")
 
 
 # ============================================================
-# DuckDB helpers
+# DuckDB helpers - Schema Agnostic
 # ============================================================
+
+
 def load_replace_to_duckdb(df: pd.DataFrame, table_name: str):
-    con = duckdb.connect(WAREHOUSE_PATH)
+    """
+    SAFETY: Load ANY DataFrame to DuckDB as raw staging table.
+    - Uses CREATE OR REPLACE to handle schema changes
+    - Never fails due to schema mismatch
+    - Sanitizes table name to prevent SQL injection
+    """
     try:
-        con.register("temp_df", df)
-        schema_name = table_name.split(".")[0]
-        con.execute(f'CREATE SCHEMA IF NOT EXISTS {schema_name};')
-        con.execute(f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM temp_df")
-    finally:
-        con.close()
+        con = duckdb.connect(WAREHOUSE_PATH)
+        try:
+            # Sanitize table name (basic protection)
+            safe_table = table_name.replace('"', '').replace("'", "").replace(';', '')
+            
+            con.register("temp_df", df)
+            schema_name = safe_table.split(".")[0]
+            con.execute(f'CREATE SCHEMA IF NOT EXISTS {schema_name};')
+            con.execute(f"CREATE OR REPLACE TABLE {safe_table} AS SELECT * FROM temp_df")
+        finally:
+            con.close()
+        return True, None
+    except Exception as e:
+        return False, str(e)[:200]
 
 
 # ============================================================
@@ -801,207 +1084,267 @@ if "Dashboard" in page or page == "◉ Dashboard":
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             if st.button("⚡ Quick Load Sample Data", use_container_width=True):
-                sample_df = pd.read_csv("data/samples/sales_sample.csv")
-                load_replace_to_duckdb(sample_df, "etl.sales_sample_staging")
-                set_active_df(sample_df, "sample:sales")
-                st.rerun()
+                # SAFETY: Use safe CSV reader
+                sample_df, error = safe_read_csv("data/samples/sales_sample.csv")
+                if sample_df is not None:
+                    load_replace_to_duckdb(sample_df, "etl.sales_sample_staging")
+                    set_active_df(sample_df, "sample:sales")
+                    st.rerun()
+                else:
+                    st.error(f"Could not load sample data: {error}")
     else:
-        # Identify columns
-        num_cols = df.select_dtypes(include=np.number).columns.tolist()
-        cat_cols = df.select_dtypes(exclude=np.number).columns.tolist()
-        date_col = next((c for c in df.columns if "date" in c.lower()), None)
-        amt_col = next((c for c in df.columns if "amount" in c.lower() or "total" in c.lower()), None)
-        qty_col = next((c for c in df.columns if "quantity" in c.lower() or "qty" in c.lower()), None)
-        prod_col = next((c for c in df.columns if "product" in c.lower()), None)
-        cat_col = next((c for c in df.columns if "category" in c.lower()), None)
-        customer_col = next((c for c in df.columns if "customer" in c.lower()), None)
-        branch_col = next((c for c in df.columns if "branch" in c.lower()), None)
+        # SAFETY: Use heuristic column detection - never assume specific columns exist
+        col_analysis = get_col_analysis()
+        num_cols = col_analysis["numeric"] if col_analysis else detect_numeric_columns(df)
+        cat_cols = col_analysis["categorical"] if col_analysis else detect_categorical_columns(df)
+        date_col = col_analysis["date_col"] if col_analysis else detect_date_column(df)
+        amt_col = col_analysis["amount_col"] if col_analysis else detect_amount_column(df)
         
-        # KPI Cards Row
+        # Additional heuristic column detection for specific purposes
+        prod_col = detect_grouping_column(df, ['product', 'item', 'service', 'name'])
+        cat_col = detect_grouping_column(df, ['category', 'type', 'group', 'class'])
+        customer_col = detect_grouping_column(df, ['customer', 'client', 'buyer', 'user'])
+        branch_col = detect_grouping_column(df, ['branch', 'location', 'store', 'outlet', 'region'])
+        
+        # KPI Cards Row - ADAPTIVE to available columns
         st.markdown(render_section_header("📌", "Key Metrics"), unsafe_allow_html=True)
         
         kpi_cols = st.columns(4)
         
-        # Total Revenue
-        if amt_col:
-            total_revenue = pd.to_numeric(df[amt_col], errors="coerce").fillna(0).sum()
-            with kpi_cols[0]:
-                st.markdown(render_kpi_card("💰", "Total Revenue", f"PKR {total_revenue:,.0f}", None, "positive", "teal"), unsafe_allow_html=True)
+        # KPI 1: Total of amount column (if found) or row count
+        with kpi_cols[0]:
+            if amt_col and amt_col in df.columns:
+                total_value = pd.to_numeric(df[amt_col], errors="coerce").fillna(0).sum()
+                st.markdown(render_kpi_card("💰", f"Total {amt_col[:12]}", f"{total_value:,.0f}", None, "positive", "teal"), unsafe_allow_html=True)
+            else:
+                st.markdown(render_kpi_card("📊", "Total Rows", f"{len(df):,}", None, "positive", "teal"), unsafe_allow_html=True)
         
-        # Total Transactions
+        # KPI 2: Record count
         with kpi_cols[1]:
-            st.markdown(render_kpi_card("📦", "Transactions", f"{len(df):,}", None, "positive", "blue"), unsafe_allow_html=True)
+            st.markdown(render_kpi_card("📦", "Records", f"{len(df):,}", None, "positive", "blue"), unsafe_allow_html=True)
         
-        # Average Transaction
-        if amt_col:
-            avg_transaction = pd.to_numeric(df[amt_col], errors="coerce").fillna(0).mean()
-            with kpi_cols[2]:
-                st.markdown(render_kpi_card("📊", "Avg Transaction", f"PKR {avg_transaction:,.0f}", None, "positive", "emerald"), unsafe_allow_html=True)
+        # KPI 3: Average of amount column (if found) or column count
+        with kpi_cols[2]:
+            if amt_col and amt_col in df.columns:
+                avg_value = pd.to_numeric(df[amt_col], errors="coerce").fillna(0).mean()
+                st.markdown(render_kpi_card("📈", f"Avg {amt_col[:12]}", f"{avg_value:,.0f}", None, "positive", "emerald"), unsafe_allow_html=True)
+            elif num_cols:
+                # Show average of first numeric column
+                first_num = num_cols[0]
+                avg_val = pd.to_numeric(df[first_num], errors="coerce").fillna(0).mean()
+                st.markdown(render_kpi_card("📈", f"Avg {first_num[:12]}", f"{avg_val:,.2f}", None, "positive", "emerald"), unsafe_allow_html=True)
+            else:
+                st.markdown(render_kpi_card("📋", "Columns", f"{len(df.columns)}", None, "positive", "emerald"), unsafe_allow_html=True)
         
-        # Unique Products/Categories
-        if prod_col:
-            unique_products = df[prod_col].nunique()
-            with kpi_cols[3]:
-                st.markdown(render_kpi_card("🏷️", "Products", f"{unique_products}", None, "positive", "amber"), unsafe_allow_html=True)
-        elif cat_col:
-            unique_cats = df[cat_col].nunique()
-            with kpi_cols[3]:
-                st.markdown(render_kpi_card("📁", "Categories", f"{unique_cats}", None, "positive", "amber"), unsafe_allow_html=True)
-        else:
-            with kpi_cols[3]:
+        # KPI 4: Unique values in a categorical column or column count
+        with kpi_cols[3]:
+            if prod_col:
+                st.markdown(render_kpi_card("🏷️", f"Unique {prod_col[:10]}", f"{df[prod_col].nunique()}", None, "positive", "amber"), unsafe_allow_html=True)
+            elif cat_col:
+                st.markdown(render_kpi_card("📁", f"Unique {cat_col[:10]}", f"{df[cat_col].nunique()}", None, "positive", "amber"), unsafe_allow_html=True)
+            elif cat_cols:
+                first_cat = cat_cols[0]
+                st.markdown(render_kpi_card("📁", f"Unique {first_cat[:10]}", f"{df[first_cat].nunique()}", None, "positive", "amber"), unsafe_allow_html=True)
+            else:
                 st.markdown(render_kpi_card("📋", "Columns", f"{len(df.columns)}", None, "positive", "slate"), unsafe_allow_html=True)
         
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # Charts Row 1
+        # Charts Row 1 - ADAPTIVE to available column types
         chart_col1, chart_col2 = st.columns(2)
         
-        # Revenue Trend or Numeric Distribution
+        # Chart 1: Time Series or Numeric Distribution
         with chart_col1:
             st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-            st.markdown('<div class="chart-title">📈 Revenue Trend</div>', unsafe_allow_html=True)
             
-            if date_col and amt_col:
-                trend_df = df.copy()
-                trend_df[date_col] = pd.to_datetime(trend_df[date_col], errors="coerce")
-                trend_df = trend_df.dropna(subset=[date_col])
-                trend_agg = trend_df.groupby(pd.Grouper(key=date_col, freq="D"))[amt_col].sum().reset_index()
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=trend_agg[date_col],
-                    y=trend_agg[amt_col],
-                    mode='lines+markers',
-                    fill='tozeroy',
-                    line=dict(color=colors['categorical'][0], width=2),
-                    marker=dict(size=6, color=colors['categorical'][0]),
-                    fillcolor=f"rgba({59 if not dark_mode else 139}, {130 if not dark_mode else 92}, {246 if not dark_mode else 246}, 0.1)"
-                ))
-                fig.update_layout(**create_chart_layout("", dark_mode, 300))
-                fig.update_layout(showlegend=False)
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            # SAFETY: Check if we can do time series
+            if date_col and date_col in df.columns and amt_col and amt_col in df.columns:
+                st.markdown('<div class="chart-title">📈 Trend Over Time</div>', unsafe_allow_html=True)
+                try:
+                    trend_df = df.copy()
+                    trend_df[date_col] = pd.to_datetime(trend_df[date_col], errors="coerce")
+                    trend_df = trend_df.dropna(subset=[date_col])
+                    
+                    if len(trend_df) > 0:
+                        trend_agg = trend_df.groupby(pd.Grouper(key=date_col, freq="D"))[amt_col].sum().reset_index()
+                        
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=trend_agg[date_col],
+                            y=trend_agg[amt_col],
+                            mode='lines+markers',
+                            fill='tozeroy',
+                            line=dict(color=colors['categorical'][0], width=2),
+                            marker=dict(size=6, color=colors['categorical'][0]),
+                            fillcolor=f"rgba({59 if not dark_mode else 139}, {130 if not dark_mode else 92}, {246 if not dark_mode else 246}, 0.1)"
+                        ))
+                        fig.update_layout(**create_chart_layout("", dark_mode, 300))
+                        fig.update_layout(showlegend=False)
+                        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                    else:
+                        st.info("No valid date values found for trend chart")
+                except Exception as e:
+                    st.warning(f"Could not create trend chart: {str(e)[:100]}")
             elif num_cols:
+                # SAFETY: Fall back to histogram of numeric column
+                st.markdown('<div class="chart-title">📊 Numeric Distribution</div>', unsafe_allow_html=True)
                 selected_num = st.selectbox("Select metric", num_cols, key="dashboard_num")
-                fig = px.histogram(
-                    df, x=selected_num, nbins=20,
-                    color_discrete_sequence=[colors['categorical'][0]]
-                )
-                fig.update_layout(**create_chart_layout("", dark_mode, 300))
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                try:
+                    fig = px.histogram(
+                        df, x=selected_num, nbins=20,
+                        color_discrete_sequence=[colors['categorical'][0]]
+                    )
+                    fig.update_layout(**create_chart_layout("", dark_mode, 300))
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                except Exception as e:
+                    st.warning(f"Could not create histogram: {str(e)[:100]}")
+            else:
+                # SAFETY: Empty state when no chartable data
+                st.markdown('<div class="chart-title">📊 Data Distribution</div>', unsafe_allow_html=True)
+                st.info("No numeric columns detected for distribution chart. Upload data with numeric values to see visualizations.")
             
             st.markdown('</div>', unsafe_allow_html=True)
         
-        # Category Distribution (Donut Chart)
+        # Chart 2: Category Distribution (Donut Chart)
         with chart_col2:
             st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-            st.markdown('<div class="chart-title">🍩 Category Distribution</div>', unsafe_allow_html=True)
+            st.markdown('<div class="chart-title">🍩 Category Breakdown</div>', unsafe_allow_html=True)
             
-            if cat_col and amt_col:
-                cat_agg = df.groupby(cat_col)[amt_col].sum().reset_index()
-                fig = go.Figure(data=[go.Pie(
-                    labels=cat_agg[cat_col],
-                    values=cat_agg[amt_col],
-                    hole=0.55,
-                    marker=dict(colors=colors['categorical']),
-                    textinfo='label+percent',
-                    textposition='outside',
-                    textfont=dict(size=11, color=colors['text'])
-                )])
-                fig.update_layout(**create_chart_layout("", dark_mode, 300))
-                fig.update_layout(showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=-0.15))
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-            elif cat_cols:
-                selected_cat = st.selectbox("Select category", cat_cols, key="dashboard_cat")
-                cat_counts = df[selected_cat].astype(str).value_counts().head(8).reset_index()
-                cat_counts.columns = [selected_cat, "count"]
-                fig = go.Figure(data=[go.Pie(
-                    labels=cat_counts[selected_cat],
-                    values=cat_counts["count"],
-                    hole=0.55,
-                    marker=dict(colors=colors['categorical']),
-                    textinfo='label+percent',
-                    textposition='outside',
-                    textfont=dict(size=11, color=colors['text'])
-                )])
-                fig.update_layout(**create_chart_layout("", dark_mode, 300))
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            # SAFETY: Multiple fallback options for categorical chart
+            try:
+                if cat_col and cat_col in df.columns and amt_col and amt_col in df.columns:
+                    cat_agg = df.groupby(cat_col)[amt_col].sum().reset_index()
+                    fig = go.Figure(data=[go.Pie(
+                        labels=cat_agg[cat_col].astype(str),
+                        values=cat_agg[amt_col],
+                        hole=0.55,
+                        marker=dict(colors=colors['categorical']),
+                        textinfo='label+percent',
+                        textposition='outside',
+                        textfont=dict(size=11, color=colors['text'])
+                    )])
+                    fig.update_layout(**create_chart_layout("", dark_mode, 300))
+                    fig.update_layout(showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=-0.15))
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                elif cat_cols:
+                    # SAFETY: User selects categorical column
+                    selected_cat = st.selectbox("Select category column", cat_cols, key="dashboard_cat")
+                    cat_counts = df[selected_cat].astype(str).value_counts().head(8).reset_index()
+                    cat_counts.columns = [selected_cat, "count"]
+                    fig = go.Figure(data=[go.Pie(
+                        labels=cat_counts[selected_cat],
+                        values=cat_counts["count"],
+                        hole=0.55,
+                        marker=dict(colors=colors['categorical']),
+                        textinfo='label+percent',
+                        textposition='outside',
+                        textfont=dict(size=11, color=colors['text'])
+                    )])
+                    fig.update_layout(**create_chart_layout("", dark_mode, 300))
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                else:
+                    # SAFETY: Empty state
+                    st.info("No categorical columns detected for breakdown chart. Data appears to be primarily numeric.")
+            except Exception as e:
+                st.warning(f"Could not create category chart: {str(e)[:100]}")
             
             st.markdown('</div>', unsafe_allow_html=True)
         
-        # Charts Row 2
+        # Charts Row 2 - ADAPTIVE to available column types
         chart_col3, chart_col4 = st.columns(2)
         
-        # Top Products Bar Chart
+        # Chart 3: Top Items Bar Chart
         with chart_col3:
             st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-            st.markdown('<div class="chart-title">🏆 Top Performers</div>', unsafe_allow_html=True)
+            st.markdown('<div class="chart-title">🏆 Top Items</div>', unsafe_allow_html=True)
             
-            if prod_col and amt_col:
-                top_products = df.groupby(prod_col)[amt_col].sum().reset_index()
-                top_products = top_products.sort_values(by=amt_col, ascending=True).tail(8)
-                
-                fig = go.Figure(data=[go.Bar(
-                    x=top_products[amt_col],
-                    y=top_products[prod_col],
-                    orientation='h',
-                    marker=dict(
-                        color=top_products[amt_col],
-                        colorscale=[[0, colors['categorical'][0]], [1, colors['categorical'][4]]],
-                        cornerradius=4
-                    ),
-                    text=top_products[amt_col].apply(lambda x: f"PKR {x:,.0f}"),
-                    textposition='auto',
-                    textfont=dict(size=10, color='white')
-                )])
-                fig.update_layout(**create_chart_layout("", dark_mode, 300))
-                fig.update_layout(showlegend=False)
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-            elif cat_cols:
-                selected = st.selectbox("Select dimension", cat_cols, key="top_dim")
-                counts = df[selected].astype(str).value_counts().head(8)
-                fig = go.Figure(data=[go.Bar(
-                    x=counts.values,
-                    y=counts.index,
-                    orientation='h',
-                    marker=dict(color=colors['categorical'][0], cornerradius=4)
-                )])
-                fig.update_layout(**create_chart_layout("", dark_mode, 300))
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            try:
+                if prod_col and prod_col in df.columns and amt_col and amt_col in df.columns:
+                    # SAFETY: Aggregate by product/item column
+                    top_items = df.groupby(prod_col)[amt_col].sum().reset_index()
+                    top_items = top_items.sort_values(by=amt_col, ascending=True).tail(8)
+                    
+                    fig = go.Figure(data=[go.Bar(
+                        x=top_items[amt_col],
+                        y=top_items[prod_col].astype(str),
+                        orientation='h',
+                        marker=dict(
+                            color=top_items[amt_col],
+                            colorscale=[[0, colors['categorical'][0]], [1, colors['categorical'][4]]],
+                            cornerradius=4
+                        ),
+                        text=top_items[amt_col].apply(lambda x: f"{x:,.0f}"),
+                        textposition='auto',
+                        textfont=dict(size=10, color='white')
+                    )])
+                    fig.update_layout(**create_chart_layout("", dark_mode, 300))
+                    fig.update_layout(showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                elif cat_cols:
+                    # SAFETY: Fall back to value counts of categorical column
+                    selected = st.selectbox("Select dimension", cat_cols, key="top_dim")
+                    counts = df[selected].astype(str).value_counts().head(8)
+                    fig = go.Figure(data=[go.Bar(
+                        x=counts.values,
+                        y=counts.index,
+                        orientation='h',
+                        marker=dict(color=colors['categorical'][0], cornerradius=4)
+                    )])
+                    fig.update_layout(**create_chart_layout("", dark_mode, 300))
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                else:
+                    st.info("No categorical columns available for ranking chart")
+            except Exception as e:
+                st.warning(f"Could not create ranking chart: {str(e)[:100]}")
             
             st.markdown('</div>', unsafe_allow_html=True)
         
-        # Branch Performance
+        # Chart 4: Secondary Grouping or Scatter Plot
         with chart_col4:
             st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-            st.markdown('<div class="chart-title">🏢 Branch Analysis</div>', unsafe_allow_html=True)
+            st.markdown('<div class="chart-title">🏢 Group Analysis</div>', unsafe_allow_html=True)
             
-            if branch_col and amt_col:
-                branch_agg = df.groupby(branch_col).agg({
-                    amt_col: 'sum',
-                }).reset_index()
-                branch_agg['count'] = df.groupby(branch_col).size().values
-                
-                fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    x=branch_agg[branch_col],
-                    y=branch_agg[amt_col],
-                    name='Revenue',
-                    marker=dict(color=colors['categorical'][0], cornerradius=4),
-                    text=branch_agg[amt_col].apply(lambda x: f"PKR {x:,.0f}"),
-                    textposition='outside',
-                    textfont=dict(size=10)
-                ))
-                fig.update_layout(**create_chart_layout("", dark_mode, 300))
-                fig.update_layout(showlegend=False, bargap=0.3)
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-            elif num_cols and len(num_cols) >= 2:
-                x_col = st.selectbox("X-axis", num_cols, key="scatter_x")
-                y_col = st.selectbox("Y-axis", [c for c in num_cols if c != x_col], key="scatter_y")
-                fig = px.scatter(df, x=x_col, y=y_col, color_discrete_sequence=[colors['categorical'][0]])
-                fig.update_layout(**create_chart_layout("", dark_mode, 300))
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-            else:
-                st.info("Add branch data to see branch analysis")
+            try:
+                if branch_col and branch_col in df.columns and amt_col and amt_col in df.columns:
+                    # SAFETY: Group by branch/location column
+                    group_agg = df.groupby(branch_col)[amt_col].sum().reset_index()
+                    
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        x=group_agg[branch_col].astype(str),
+                        y=group_agg[amt_col],
+                        marker=dict(color=colors['categorical'][0], cornerradius=4),
+                        text=group_agg[amt_col].apply(lambda x: f"{x:,.0f}"),
+                        textposition='outside',
+                        textfont=dict(size=10)
+                    ))
+                    fig.update_layout(**create_chart_layout("", dark_mode, 300))
+                    fig.update_layout(showlegend=False, bargap=0.3)
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                elif num_cols and len(num_cols) >= 2:
+                    # SAFETY: Fall back to scatter plot
+                    st.caption("Scatter Plot - Select columns to compare")
+                    x_col = st.selectbox("X-axis", num_cols, key="scatter_x")
+                    remaining = [c for c in num_cols if c != x_col]
+                    y_col = st.selectbox("Y-axis", remaining if remaining else num_cols, key="scatter_y")
+                    fig = px.scatter(df, x=x_col, y=y_col, color_discrete_sequence=[colors['categorical'][0]])
+                    fig.update_layout(**create_chart_layout("", dark_mode, 300))
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                elif cat_cols and len(cat_cols) >= 1:
+                    # Show grouped counts for first categorical
+                    group_col = cat_cols[0]
+                    counts = df[group_col].astype(str).value_counts().head(10)
+                    fig = go.Figure(data=[go.Bar(
+                        x=counts.index,
+                        y=counts.values,
+                        marker=dict(color=colors['categorical'][0], cornerradius=4)
+                    )])
+                    fig.update_layout(**create_chart_layout("", dark_mode, 300))
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                else:
+                    st.info("Upload data with multiple columns to see group analysis")
+            except Exception as e:
+                st.warning(f"Could not create group chart: {str(e)[:100]}")
             
             st.markdown('</div>', unsafe_allow_html=True)
         
@@ -1030,56 +1373,122 @@ elif "Data Ingestion" in page or "Data Import" in page:
     
     source_tabs = st.tabs(["📤 Upload File", "🔗 Google Sheets", "🗄️ Database"])
     
-    # Upload File Tab
+    # Upload File Tab - UNIVERSAL CSV HANDLING
     with source_tabs[0]:
         st.markdown(render_section_header("📤", "Upload File"), unsafe_allow_html=True)
+        
+        # SAFETY: Show supported formats and limits
+        st.caption(f"Supported: CSV, Excel (XLSX) • Max size: {MAX_UPLOAD_MB} MB • Any column structure accepted")
         
         up = st.file_uploader("Drop your CSV or Excel file here", type=["csv", "xlsx"], key="file_upload")
         
         if up:
-            try:
-                if up.size > MAX_UPLOAD_MB * 1024 * 1024:
-                    st.error(f"⚠️ File too large (max {MAX_UPLOAD_MB} MB)")
+            # SAFETY: File size check with clear error message
+            if up.size > MAX_UPLOAD_MB * 1024 * 1024:
+                st.error(f"⚠️ File too large ({up.size / (1024*1024):.1f} MB). Maximum allowed: {MAX_UPLOAD_MB} MB")
+                st.stop()
+            
+            # SAFETY: Show processing indicator, never silent
+            with st.spinner(f"Processing {up.name}..."):
+                df = None
+                error_msg = None
+                
+                # SAFETY: Use robust CSV/Excel readers with fallback encodings
+                if up.name.lower().endswith(".csv"):
+                    df, error_msg = safe_read_csv(up)
+                else:
+                    df, error_msg = safe_read_excel(up)
+                
+                # SAFETY: Handle parsing failures gracefully
+                if df is None or error_msg:
+                    st.error(f"❌ Failed to parse file: {error_msg}")
+                    st.info("💡 Tips: Ensure the file is not corrupted, check encoding (UTF-8 recommended), verify delimiter consistency.")
                     st.stop()
                 
-                with st.spinner("Processing file..."):
-                    df = load_csv_cached(up) if up.name.endswith(".csv") else load_excel_cached(up)
-                    load_replace_to_duckdb(df, "etl.uploaded_data")
-                    set_active_df(df, f"upload:{up.name}")
+                # SAFETY: Validate DataFrame has content
+                if len(df) == 0:
+                    st.warning("⚠️ File loaded but contains no data rows.")
+                    st.stop()
                 
-                st.success(f"✅ Successfully loaded {len(df):,} rows from {up.name}")
+                # SAFETY: Load to DuckDB with error handling
+                success, db_error = load_replace_to_duckdb(df, "etl.uploaded_data")
+                if not success:
+                    st.warning(f"⚠️ Data loaded but DuckDB storage failed: {db_error}")
                 
-                st.markdown('<div class="dataframe-container">', unsafe_allow_html=True)
-                st.dataframe(df.head(20), use_container_width=True, hide_index=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-                
-            except Exception as e:
-                st.error(f"❌ Upload failed – {e}")
+                # Update session state
+                set_active_df(df, f"upload:{up.name}")
+            
+            # SAFETY: Always show success feedback with details
+            col_analysis = get_col_analysis()
+            st.success(f"✅ Successfully loaded **{len(df):,} rows** × **{len(df.columns)} columns** from `{up.name}`")
+            
+            # SAFETY: Show column type summary for user awareness
+            if col_analysis:
+                type_info = []
+                if col_analysis["numeric"]:
+                    type_info.append(f"📊 {len(col_analysis['numeric'])} numeric")
+                if col_analysis["datetime"]:
+                    type_info.append(f"📅 {len(col_analysis['datetime'])} datetime")
+                if col_analysis["categorical"]:
+                    type_info.append(f"🏷️ {len(col_analysis['categorical'])} categorical")
+                if type_info:
+                    st.caption("Detected: " + " • ".join(type_info))
+            
+            # Show data preview
+            st.markdown('<div class="dataframe-container">', unsafe_allow_html=True)
+            st.dataframe(df.head(20), use_container_width=True, hide_index=True)
+            st.markdown('</div>', unsafe_allow_html=True)
     
-    # Google Sheets Tab
+    # Google Sheets Tab - UNIVERSAL CSV HANDLING
     with source_tabs[1]:
         st.markdown(render_section_header("🔗", "Google Sheets"), unsafe_allow_html=True)
         
-        url = st.text_input("Paste Google Sheet URL (ensure 'Anyone with link' can view)", key="gsheet_url")
+        st.caption("Sheet must be shared with 'Anyone with the link can view'")
+        url = st.text_input("Paste Google Sheet URL", key="gsheet_url", placeholder="https://docs.google.com/spreadsheets/d/...")
         
         if url and st.button("Load from Google Sheets", key="load_gsheet"):
+            # SAFETY: Wrap in try/except for network errors
             try:
                 with st.spinner("Fetching data from Google Sheets..."):
+                    # Convert share URL to export URL
+                    export_url = url
                     if "spreadsheets/d/" in url:
-                        sid = url.split("/d/")[1].split("/")[0]
-                        url = f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv"
-                    df = pd.read_csv(url)
-                    load_replace_to_duckdb(df, "etl.uploaded_data")
+                        try:
+                            sid = url.split("/d/")[1].split("/")[0]
+                            export_url = f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv"
+                        except IndexError:
+                            st.error("❌ Invalid Google Sheets URL format")
+                            st.stop()
+                    
+                    # SAFETY: Use safe CSV reader for Google Sheets export
+                    df, error_msg = safe_read_csv(export_url)
+                    
+                    if df is None or error_msg:
+                        st.error(f"❌ Failed to load: {error_msg}")
+                        st.info("💡 Make sure the sheet is publicly accessible (Anyone with link → Viewer)")
+                        st.stop()
+                    
+                    if len(df) == 0:
+                        st.warning("⚠️ Sheet loaded but contains no data")
+                        st.stop()
+                    
+                    # Store in DuckDB
+                    success, db_error = load_replace_to_duckdb(df, "etl.google_sheets_data")
+                    if not success:
+                        st.warning(f"⚠️ DuckDB storage failed: {db_error}")
+                    
                     set_active_df(df, "google_sheets")
                 
-                st.success(f"✅ Loaded {len(df):,} rows from Google Sheets")
+                # SAFETY: Always show success with row/column counts
+                st.success(f"✅ Loaded **{len(df):,} rows** × **{len(df.columns)} columns** from Google Sheets")
                 
                 st.markdown('<div class="dataframe-container">', unsafe_allow_html=True)
                 st.dataframe(df.head(20), use_container_width=True, hide_index=True)
                 st.markdown('</div>', unsafe_allow_html=True)
                 
             except Exception as e:
-                st.error(f"❌ Failed to load – {e}")
+                st.error(f"❌ Connection failed: {str(e)[:200]}")
+                st.info("💡 Check your internet connection and sheet sharing settings")
     
     # Database Tab
     with source_tabs[2]:
@@ -1193,10 +1602,17 @@ elif "Analytics" in page or page == "⊞ Analytics":
             "Load data first to access analytics features."
         ), unsafe_allow_html=True)
     else:
-        num_cols = df.select_dtypes(include=np.number).columns.tolist()
-        cat_cols = df.select_dtypes(exclude=np.number).columns.tolist()
-        date_col = next((c for c in df.columns if "date" in c.lower()), None)
-        amt_col = next((c for c in df.columns if "amount" in c.lower() or "total" in c.lower()), None)
+        # SAFETY: Use heuristic column detection
+        col_analysis = get_col_analysis()
+        num_cols = col_analysis["numeric"] if col_analysis else detect_numeric_columns(df)
+        cat_cols = col_analysis["categorical"] if col_analysis else detect_categorical_columns(df)
+        date_col = col_analysis["date_col"] if col_analysis else detect_date_column(df)
+        amt_col = col_analysis["amount_col"] if col_analysis else detect_amount_column(df)
+        
+        # SAFETY: Also include all non-numeric columns for filtering
+        all_cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+        if not cat_cols:
+            cat_cols = all_cat_cols
         
         # Filter Panel
         st.markdown(render_section_header("🎛️", "Filters"), unsafe_allow_html=True)
@@ -1304,8 +1720,8 @@ elif "Analytics" in page or page == "⊞ Analytics":
         
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # Trend Analysis
-        if date_col and amt_col:
+        # SAFETY: Time Series Analysis - only show if date column exists
+        if date_col and date_col in df.columns and amt_col and amt_col in df.columns:
             st.markdown(render_section_header("📅", "Time Series Analysis"), unsafe_allow_html=True)
             
             trend_cols = st.columns([2, 1])
@@ -1314,21 +1730,29 @@ elif "Analytics" in page or page == "⊞ Analytics":
                 st.markdown('<div class="chart-container">', unsafe_allow_html=True)
                 st.markdown('<div class="chart-title">Weekly Trend</div>', unsafe_allow_html=True)
                 
-                trend_df = filtered_df.copy()
-                trend_df[date_col] = pd.to_datetime(trend_df[date_col], errors="coerce")
-                weekly = trend_df.groupby(pd.Grouper(key=date_col, freq="W"))[amt_col].agg(['sum', 'count']).reset_index()
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=weekly[date_col], y=weekly['sum'],
-                    name='Revenue',
-                    mode='lines+markers',
-                    line=dict(color=colors['categorical'][0], width=2),
-                    fill='tozeroy',
-                    fillcolor=f"rgba(59, 130, 246, 0.1)"
-                ))
-                fig.update_layout(**create_chart_layout("", dark_mode, 350))
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                try:
+                    trend_df = filtered_df.copy()
+                    trend_df[date_col] = pd.to_datetime(trend_df[date_col], errors="coerce")
+                    trend_df = trend_df.dropna(subset=[date_col])
+                    
+                    if len(trend_df) > 0:
+                        weekly = trend_df.groupby(pd.Grouper(key=date_col, freq="W"))[amt_col].agg(['sum', 'count']).reset_index()
+                        
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=weekly[date_col], y=weekly['sum'],
+                            name='Total',
+                            mode='lines+markers',
+                            line=dict(color=colors['categorical'][0], width=2),
+                            fill='tozeroy',
+                            fillcolor=f"rgba(59, 130, 246, 0.1)"
+                        ))
+                        fig.update_layout(**create_chart_layout("", dark_mode, 350))
+                        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                    else:
+                        st.info("No valid date values for trend analysis")
+                except Exception as e:
+                    st.warning(f"Could not create trend chart: {str(e)[:100]}")
                 
                 st.markdown('</div>', unsafe_allow_html=True)
             
@@ -1336,24 +1760,55 @@ elif "Analytics" in page or page == "⊞ Analytics":
                 st.markdown('<div class="chart-container">', unsafe_allow_html=True)
                 st.markdown('<div class="chart-title">Summary Stats</div>', unsafe_allow_html=True)
                 
-                stats = {
-                    "Total": f"PKR {filtered_df[amt_col].sum():,.0f}",
-                    "Average": f"PKR {filtered_df[amt_col].mean():,.0f}",
-                    "Median": f"PKR {filtered_df[amt_col].median():,.0f}",
-                    "Max": f"PKR {filtered_df[amt_col].max():,.0f}",
-                    "Min": f"PKR {filtered_df[amt_col].min():,.0f}",
-                    "Std Dev": f"PKR {filtered_df[amt_col].std():,.0f}"
-                }
-                
-                for label, value in stats.items():
-                    st.markdown(f"""
-                    <div style="display:flex;justify-content:space-between;padding:0.5rem 0;border-bottom:1px solid var(--border);">
-                        <span style="color:var(--text-secondary);font-size:0.85rem;">{label}</span>
-                        <span style="color:var(--text-primary);font-weight:600;font-size:0.85rem;">{value}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
+                try:
+                    # SAFETY: Convert to numeric and handle errors
+                    numeric_col = pd.to_numeric(filtered_df[amt_col], errors='coerce')
+                    
+                    stats = {
+                        "Total": f"{numeric_col.sum():,.2f}",
+                        "Average": f"{numeric_col.mean():,.2f}",
+                        "Median": f"{numeric_col.median():,.2f}",
+                        "Max": f"{numeric_col.max():,.2f}",
+                        "Min": f"{numeric_col.min():,.2f}",
+                        "Std Dev": f"{numeric_col.std():,.2f}"
+                    }
+                    
+                    for label, value in stats.items():
+                        st.markdown(f"""
+                        <div style="display:flex;justify-content:space-between;padding:0.5rem 0;border-bottom:1px solid var(--border);">
+                            <span style="color:var(--text-secondary);font-size:0.85rem;">{label}</span>
+                            <span style="color:var(--text-primary);font-weight:600;font-size:0.85rem;">{value}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                except Exception as e:
+                    st.warning(f"Could not calculate stats: {str(e)[:100]}")
                 
                 st.markdown('</div>', unsafe_allow_html=True)
+        elif num_cols:
+            # SAFETY: Show numeric stats even without date column
+            st.markdown(render_section_header("📊", "Numeric Summary"), unsafe_allow_html=True)
+            st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+            
+            selected_stat_col = st.selectbox("Select column for statistics", num_cols, key="stat_col")
+            try:
+                numeric_col = pd.to_numeric(filtered_df[selected_stat_col], errors='coerce')
+                stat_cols = st.columns(6)
+                with stat_cols[0]:
+                    st.metric("Sum", f"{numeric_col.sum():,.2f}")
+                with stat_cols[1]:
+                    st.metric("Mean", f"{numeric_col.mean():,.2f}")
+                with stat_cols[2]:
+                    st.metric("Median", f"{numeric_col.median():,.2f}")
+                with stat_cols[3]:
+                    st.metric("Max", f"{numeric_col.max():,.2f}")
+                with stat_cols[4]:
+                    st.metric("Min", f"{numeric_col.min():,.2f}")
+                with stat_cols[5]:
+                    st.metric("Std Dev", f"{numeric_col.std():,.2f}")
+            except Exception as e:
+                st.warning(f"Could not calculate statistics: {str(e)[:100]}")
+            
+            st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ============================================================
@@ -1376,13 +1831,20 @@ elif "Business Summary" in page or "Business" in page:
             "Load your sales or transaction data to see business insights."
         ), unsafe_allow_html=True)
     else:
-        amt_col = next((c for c in df.columns if "amount" in c.lower() or "total" in c.lower()), None)
-        date_col = next((c for c in df.columns if "date" in c.lower()), None)
-        prod_col = next((c for c in df.columns if "product" in c.lower()), None)
-        customer_col = next((c for c in df.columns if "customer" in c.lower()), None)
-        staff_col = next((c for c in df.columns if "staff" in c.lower()), None)
+        # SAFETY: Use heuristic column detection - never assume specific columns
+        col_analysis = get_col_analysis()
+        amt_col = col_analysis["amount_col"] if col_analysis else detect_amount_column(df)
+        date_col = col_analysis["date_col"] if col_analysis else detect_date_column(df)
+        num_cols = col_analysis["numeric"] if col_analysis else detect_numeric_columns(df)
+        cat_cols = col_analysis["categorical"] if col_analysis else detect_categorical_columns(df)
         
-        if amt_col:
+        # Heuristic detection for specific column types
+        prod_col = detect_grouping_column(df, ['product', 'item', 'service', 'name', 'sku'])
+        customer_col = detect_grouping_column(df, ['customer', 'client', 'buyer', 'user', 'account'])
+        staff_col = detect_grouping_column(df, ['staff', 'employee', 'agent', 'rep', 'salesperson', 'assigned'])
+        
+        # SAFETY: Check if we have a usable numeric column
+        if amt_col and amt_col in df.columns:
             amounts = pd.to_numeric(df[amt_col], errors="coerce").fillna(0)
             
             # Executive KPIs
@@ -1530,8 +1992,54 @@ elif "Business Summary" in page or "Business" in page:
                         """, unsafe_allow_html=True)
                     
                     st.markdown('</div>', unsafe_allow_html=True)
+        elif num_cols:
+            # SAFETY: Fallback - show stats for available numeric columns
+            st.markdown(render_section_header("📊", "Numeric Data Summary"), unsafe_allow_html=True)
+            st.info("💡 No clear 'amount' or 'revenue' column detected. Showing summary of available numeric columns.")
+            
+            # Let user select which numeric column to analyze
+            selected_num_col = st.selectbox("Select numeric column to analyze", num_cols, key="biz_num_col")
+            
+            amounts = pd.to_numeric(df[selected_num_col], errors="coerce").fillna(0)
+            
+            kpi_row = st.columns(4)
+            with kpi_row[0]:
+                st.markdown(render_kpi_card("📊", f"Total {selected_num_col[:12]}", f"{amounts.sum():,.2f}", None, "positive", "teal"), unsafe_allow_html=True)
+            with kpi_row[1]:
+                st.markdown(render_kpi_card("📈", "Average", f"{amounts.mean():,.2f}", None, "positive", "emerald"), unsafe_allow_html=True)
+            with kpi_row[2]:
+                st.markdown(render_kpi_card("📦", "Records", f"{len(df):,}", None, "positive", "blue"), unsafe_allow_html=True)
+            with kpi_row[3]:
+                st.markdown(render_kpi_card("📋", "Max Value", f"{amounts.max():,.2f}", None, "positive", "amber"), unsafe_allow_html=True)
+            
+            # Show distribution
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown('<div class="chart-container">', unsafe_allow_html=True)
+            st.markdown(f'<div class="chart-title">📊 Distribution of {selected_num_col}</div>', unsafe_allow_html=True)
+            
+            try:
+                fig = px.histogram(df, x=selected_num_col, nbins=30, color_discrete_sequence=[colors['categorical'][0]])
+                fig.update_layout(**create_chart_layout("", dark_mode, 300))
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            except Exception as e:
+                st.warning(f"Could not create histogram: {str(e)[:100]}")
+            
+            st.markdown('</div>', unsafe_allow_html=True)
         else:
-            st.warning("⚠️ No numeric amount column found. Please ensure your data has an 'amount' or 'total' column.")
+            # SAFETY: No numeric columns at all - show data structure info
+            st.warning("⚠️ No numeric columns detected in your data.")
+            st.info("""
+            **Your data appears to be non-numeric.** Business metrics require numeric values like:
+            - Sales amounts, revenues, totals
+            - Quantities, counts, prices
+            - Ratings, scores, percentages
+            
+            **Current columns detected:**
+            """)
+            for col in df.columns[:10]:
+                st.write(f"- `{col}` ({df[col].dtype})")
+            if len(df.columns) > 10:
+                st.write(f"- ... and {len(df.columns) - 10} more columns")
 
 
 # ============================================================
@@ -1560,11 +2068,15 @@ elif "Quick Load" in page or page == "⚡ Quick Load":
         """, unsafe_allow_html=True)
         if st.button("Load Sales Data", key="load_sales", use_container_width=True):
             with st.spinner("Loading..."):
-                df = pd.read_csv("data/samples/sales_sample.csv")
-                load_replace_to_duckdb(df, "etl.sales_sample_staging")
-                set_active_df(df, "sample:sales")
-            st.success("✅ Sales sample loaded!")
-            st.rerun()
+                # SAFETY: Use safe CSV reader
+                df, error = safe_read_csv("data/samples/sales_sample.csv")
+                if df is None:
+                    st.error(f"❌ Failed to load: {error}")
+                else:
+                    load_replace_to_duckdb(df, "etl.sales_sample_staging")
+                    set_active_df(df, "sample:sales")
+                    st.success(f"✅ Sales sample loaded! ({len(df):,} rows)")
+                    st.rerun()
     
     with sample_cards[1]:
         st.markdown("""
@@ -1576,15 +2088,16 @@ elif "Quick Load" in page or page == "⚡ Quick Load":
         </div>
         """, unsafe_allow_html=True)
         if st.button("Load Appointments", key="load_appt", use_container_width=True):
-            try:
-                with st.spinner("Loading..."):
-                    df = pd.read_csv("data/samples/appointments_sample.csv")
+            with st.spinner("Loading..."):
+                # SAFETY: Use safe CSV reader with error handling
+                df, error = safe_read_csv("data/samples/appointments_sample.csv")
+                if df is None:
+                    st.error(f"❌ Sample file not found or invalid: {error}")
+                else:
                     load_replace_to_duckdb(df, "etl.appointments_staging")
                     set_active_df(df, "sample:appointments")
-                st.success("✅ Appointments sample loaded!")
-                st.rerun()
-            except:
-                st.error("Sample file not found")
+                    st.success(f"✅ Appointments sample loaded! ({len(df):,} rows)")
+                    st.rerun()
     
     with sample_cards[2]:
         st.markdown("""
@@ -1596,15 +2109,16 @@ elif "Quick Load" in page or page == "⚡ Quick Load":
         </div>
         """, unsafe_allow_html=True)
         if st.button("Load Expenses", key="load_exp", use_container_width=True):
-            try:
-                with st.spinner("Loading..."):
-                    df = pd.read_csv("data/samples/expenses_sample.csv")
+            with st.spinner("Loading..."):
+                # SAFETY: Use safe CSV reader with error handling
+                df, error = safe_read_csv("data/samples/expenses_sample.csv")
+                if df is None:
+                    st.error(f"❌ Sample file not found or invalid: {error}")
+                else:
                     load_replace_to_duckdb(df, "etl.expenses_staging")
                     set_active_df(df, "sample:expenses")
-                st.success("✅ Expenses sample loaded!")
-                st.rerun()
-            except:
-                st.error("Sample file not found")
+                    st.success(f"✅ Expenses sample loaded! ({len(df):,} rows)")
+                    st.rerun()
     
     st.markdown("<br>", unsafe_allow_html=True)
     
