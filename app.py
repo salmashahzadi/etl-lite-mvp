@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import duckdb
+import os
 import numpy as np
 from sqlalchemy import create_engine
 from datetime import datetime
@@ -726,6 +727,22 @@ def safe_read_excel(file):
 
 
 # ============================================================
+# Google Sheets Safe Reader (Cloud-safe)
+# ============================================================
+def read_gsheet_csv(export_url: str, timeout=30):
+    """
+    Stable Google Sheets loader.
+    Avoids encoding/delimiter issues with direct pandas URL reads.
+    """
+    import requests
+    from io import StringIO
+
+    r = requests.get(export_url, timeout=timeout)
+    r.raise_for_status()
+    return pd.read_csv(StringIO(r.text)), None
+
+
+# ============================================================
 # COLUMN TYPE DETECTION - Heuristic Analysis
 # ============================================================
 # These functions dynamically detect column types without
@@ -1063,7 +1080,7 @@ colors = get_chart_colors(dark_mode)
 # ============================================================
 # Dashboard Page
 # ============================================================
-if "Dashboard" in page or page == "◉ Dashboard":
+if page == "◉ Dashboard":
     # Header
     st.markdown("""
     <div class="dashboard-header">
@@ -1085,13 +1102,17 @@ if "Dashboard" in page or page == "◉ Dashboard":
         with col2:
             if st.button("⚡ Quick Load Sample Data", use_container_width=True):
                 # SAFETY: Use safe CSV reader
-                sample_df, error = safe_read_csv("data/samples/sales_sample.csv")
-                if sample_df is not None:
-                    load_replace_to_duckdb(sample_df, "etl.sales_sample_staging")
-                    set_active_df(sample_df, "sample:sales")
-                    st.rerun()
+                sample_path = "data/samples/sales_sample.csv"
+                if not os.path.exists(sample_path):
+                    st.error("Sample file missing in deployment repo.")
                 else:
-                    st.error(f"Could not load sample data: {error}")
+                    sample_df, error = safe_read_csv(sample_path)
+                    if sample_df is not None:
+                        load_replace_to_duckdb(sample_df, "etl.sales_sample_staging")
+                        set_active_df(sample_df, "sample:sales")
+                        st.rerun()
+                    else:
+                        st.error(f"Could not load sample data: {error}")
     else:
         # SAFETY: Use heuristic column detection - never assume specific columns exist
         col_analysis = get_col_analysis()
@@ -1363,7 +1384,7 @@ if "Dashboard" in page or page == "◉ Dashboard":
 # ============================================================
 # Data Ingestion Page
 # ============================================================
-elif "Data Ingestion" in page or "Data Import" in page:
+elif page == "↓ Data Import":
     st.markdown("""
     <div class="dashboard-header">
         <h1>📥 Data Ingestion</h1>
@@ -1460,8 +1481,8 @@ elif "Data Ingestion" in page or "Data Import" in page:
                             st.error("❌ Invalid Google Sheets URL format")
                             st.stop()
                     
-                    # SAFETY: Use safe CSV reader for Google Sheets export
-                    df, error_msg = safe_read_csv(export_url)
+                    # SAFETY: Use Google Sheets–specific CSV reader (cloud-safe)
+                    df, error_msg = read_gsheet_csv(export_url)
                     
                     if df is None or error_msg:
                         st.error(f"❌ Failed to load: {error_msg}")
@@ -1518,7 +1539,7 @@ elif "Data Ingestion" in page or "Data Import" in page:
             try:
                 with st.spinner("Connecting..."):
                     if db_type == "MySQL":
-                        engine = create_engine(f"mysql+mysqlconnector://{user}:{password}@{host}/{database}")
+                        engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}/{database}")
                         tables = pd.read_sql("SHOW TABLES", engine)
                         st.session_state["db_tables"] = tables.iloc[:, 0].astype(str).tolist()
                         st.session_state["active_con"] = engine
@@ -1533,9 +1554,18 @@ elif "Data Ingestion" in page or "Data Import" in page:
                             user=user, password=password, account=host,
                             warehouse=warehouse or None, database=database or None, schema=schema or None
                         )
-                        tables = pd.read_sql("SHOW TABLES", con)
-                        name_col = [c for c in tables.columns if c.lower() == "name"][0]
-                        st.session_state["db_tables"] = tables[name_col].astype(str).tolist()
+                        cur = con.cursor()
+                        cur.execute("SHOW TABLES")
+                        rows = cur.fetchall()
+                        cols = [c[0] for c in cur.description]
+                        tables = pd.DataFrame(rows, columns=cols)
+                        cur.close()
+
+                        name_col = [c for c in tables.columns if c.lower() == "name"]
+                        if name_col:
+                            st.session_state["db_tables"] = tables[name_col[0]].astype(str).tolist()
+                        else:
+                            st.session_state["db_tables"] = []
                         st.session_state["active_con"] = con
                     
                     st.session_state["db_connected"] = True
@@ -1585,7 +1615,7 @@ elif "Data Ingestion" in page or "Data Import" in page:
 # ============================================================
 # Analytics Page
 # ============================================================
-elif "Analytics" in page or page == "⊞ Analytics":
+elif page == "⊞ Analytics":
     st.markdown("""
     <div class="dashboard-header">
         <h1>📈 Advanced Analytics</h1>
@@ -1814,7 +1844,7 @@ elif "Analytics" in page or page == "⊞ Analytics":
 # ============================================================
 # Business Summary Page
 # ============================================================
-elif "Business Summary" in page or "Business" in page:
+elif page == "◈ Business":
     st.markdown("""
     <div class="dashboard-header">
         <h1>💼 Business Summary</h1>
@@ -2045,7 +2075,7 @@ elif "Business Summary" in page or "Business" in page:
 # ============================================================
 # Quick Load Page
 # ============================================================
-elif "Quick Load" in page or page == "⚡ Quick Load":
+elif page == "⚡ Quick Load":
     st.markdown("""
     <div class="dashboard-header">
         <h1>⚡ Quick Load</h1>
