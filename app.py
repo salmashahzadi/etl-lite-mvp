@@ -20,11 +20,17 @@ from etl.load import safe_load_to_duckdb
 # ============================================================
 # Page Configuration
 # ============================================================
+# Collapse sidebar after nav click (used for mobile auto-close)
+if st.session_state.get("_sidebar_collapse_next"):
+    st.session_state["_sidebar_collapse_next"] = False
+    _sidebar_state = "collapsed"
+else:
+    _sidebar_state = "expanded"
 st.set_page_config(
     page_title="ETL Lite Analytics",
     layout="wide",
     page_icon="📊",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state=_sidebar_state
 )
 
 
@@ -140,13 +146,24 @@ def inject_custom_css(dark_mode=False):
         [data-testid="stSidebar"] .stRadio > div > label {{
             background: transparent;
             border-radius: 8px;
-            padding: 0.65rem 0.85rem;
+            padding: 0.75rem 1rem;
             margin: 0;
             transition: all 0.15s ease;
             border: none;
             color: {sidebar_text} !important;
             font-weight: 500;
-            font-size: 0.9rem;
+            font-size: 1.05rem;
+            line-height: 1.4;
+        }}
+        /* Breadcrumb icon (first character): bigger and accent color */
+        [data-testid="stSidebar"] .stRadio > div > label::first-letter {{
+            font-size: 1.55em;
+            font-weight: 700;
+            color: {sidebar_accent} !important;
+            margin-right: 0.2em;
+        }}
+        [data-testid="stSidebar"] .stRadio > div > label[data-checked="true"]::first-letter {{
+            color: white !important;
         }}
         
         [data-testid="stSidebar"] .stRadio > div > label:hover {{
@@ -549,6 +566,62 @@ def inject_custom_css(dark_mode=False):
             font-weight: 600;
             margin-bottom: 0.5rem;
             padding: 0 0.25rem;
+        }}
+
+        /* ========== Responsive: Sidebar & navigation (breadcrumb menu) ========== */
+        @media (max-width: 768px) {{
+            .main .block-container {{
+                padding: 1rem 1rem 1.5rem 1rem;
+            }}
+            .dashboard-header {{
+                padding: 1.25rem 1.25rem;
+            }}
+            .dashboard-header h1 {{
+                font-size: 1.35rem;
+            }}
+            .dashboard-header p {{
+                font-size: 0.85rem;
+            }}
+        }}
+
+        /* Sidebar: prevent squish and overflow */
+        [data-testid="stSidebar"] {{
+            min-width: 220px;
+            max-width: 320px;
+        }}
+        [data-testid="stSidebar"] [data-testid="stSidebarContent"] {{
+            overflow-y: auto;
+            overflow-x: hidden;
+        }}
+
+        /* Navigation menu (breadcrumb): wrap and scale on narrow sidebar */
+        [data-testid="stSidebar"] .stRadio > div {{
+            flex-wrap: wrap;
+        }}
+        [data-testid="stSidebar"] .stRadio > div > label {{
+            min-width: 0;
+            padding: 0.65rem 0.75rem;
+            font-size: 1rem;
+        }}
+        @media (max-width: 640px) {{
+            [data-testid="stSidebar"] .stRadio > div > label {{
+                font-size: 0.95rem;
+                padding: 0.55rem 0.65rem;
+            }}
+            [data-testid="stSidebar"] .stRadio > div > label::first-letter {{
+                font-size: 1.4em;
+            }}
+            .sidebar-logo h2 {{
+                font-size: 1.1rem;
+            }}
+            .sidebar-logo-icon {{
+                width: 44px;
+                height: 44px;
+                font-size: 1.25rem;
+            }}
+            .sidebar-metric-value {{
+                font-size: 1.15rem;
+            }}
         }}
     </style>
     """, unsafe_allow_html=True)
@@ -1075,6 +1148,12 @@ with st.sidebar:
 # Apply custom CSS
 inject_custom_css(dark_mode)
 colors = get_chart_colors(dark_mode)
+
+# Close sidebar on next run when user picks a different nav tab (auto-close on mobile)
+_prev_page = st.session_state.get("_sidebar_nav_prev")
+if _prev_page is not None and _prev_page != page:
+    st.session_state["_sidebar_collapse_next"] = True
+st.session_state["_sidebar_nav_prev"] = page
 
 
 # ============================================================
