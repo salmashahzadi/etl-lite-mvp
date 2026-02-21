@@ -181,10 +181,10 @@ def inject_custom_css(dark_mode=False):
         }}
         
         /* Hide default streamlit elements */
-        #MainMenu {{visibility: hidden;}}
-        footer {{visibility: hidden;}}
-        header {{visibility: hidden;}}
         
+        #MainMenu, header, footer {{
+  display: none !important;
+}}
         /* Main content area */
         .main .block-container {{
             padding: 1.5rem 2.5rem 2rem 2.5rem;
@@ -594,6 +594,15 @@ def inject_custom_css(dark_mode=False):
             overflow-x: hidden;
         }}
 
+        /* Mobile: narrower sidebar to save screen space */
+        @media (max-width: 768px) {{
+            [data-testid="stSidebar"] {{
+                width: 220px !important;
+                min-width: 200px !important;
+                max-width: 240px !important;
+            }}
+        }}
+
         /* Navigation menu (breadcrumb): wrap and scale on narrow sidebar */
         [data-testid="stSidebar"] .stRadio > div {{
             flex-wrap: wrap;
@@ -622,6 +631,42 @@ def inject_custom_css(dark_mode=False):
             .sidebar-metric-value {{
                 font-size: 1.15rem;
             }}
+            /* ==============================
+   FIX FILTER DROPDOWNS (DESKTOP)
+   ============================== */
+
+/* Selectbox & multiselect text */
+div[data-baseweb="select"] * {{
+  color: #0f172a !important;   /* dark text */
+}}
+
+/* Selectbox container */
+div[data-baseweb="select"] > div {{
+  background: #ffffff !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 10px !important;
+}}
+
+/* Dropdown menu (popover) MUST be above Plotly */
+div[data-baseweb="popover"],
+ul[role="listbox"] {{
+  z-index: 999999 !important;
+}}
+
+/* Plotly charts should NOT capture clicks */
+.js-plotly-plot,
+.stPlotlyChart {{
+  position: relative !important;
+  z-index: 0 !important;
+}}
+
+/* Your custom card wrappers */
+.chart-container,
+.kpi-card,
+.dataframe-container {{
+  position: relative !important;
+  z-index: 1 !important;
+}}
         }}
     </style>
     """, unsafe_allow_html=True)
@@ -1149,11 +1194,7 @@ with st.sidebar:
 inject_custom_css(dark_mode)
 colors = get_chart_colors(dark_mode)
 
-# Close sidebar on next run when user picks a different nav tab (auto-close on mobile)
-_prev_page = st.session_state.get("_sidebar_nav_prev")
-if _prev_page is not None and _prev_page != page:
-    st.session_state["_sidebar_collapse_next"] = True
-st.session_state["_sidebar_nav_prev"] = page
+# Sidebar stays open on desktop until user closes it (no auto-collapse on nav change)
 
 
 # ============================================================
