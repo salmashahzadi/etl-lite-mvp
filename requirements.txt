@@ -1,9 +1,15 @@
 # --- Core Frameworks ---
 streamlit==1.38.0
+
 fastapi==0.115.0
 uvicorn==0.30.6
 python-multipart==0.0.9
 python-dotenv==1.0.1
+
+# Guardrails for FastAPI stack (helps pip avoid resolver dead-ends)
+pydantic>=2.7.0,<3.0.0
+starlette>=0.37.2,<0.39.0
+anyio>=3.7.1,<5.0.0
 
 # --- Data & Analytics ---
 pandas==2.1.4
@@ -13,9 +19,16 @@ plotly==5.23.0
 sqlalchemy==2.0.35
 
 # --- Database Drivers ---
-psycopg2-binary==2.9.9     # PostgreSQL
-pymysql==1.1.1             # MySQL
+psycopg2-binary==2.9.9
+pymysql==1.1.1
+
+# Snowflake (supports Python 3.12)
 snowflake-connector-python==3.10.0
+
+# Guardrails for Snowflake crypto stack (common failure point)
+cryptography>=41.0.7,<45
+pyOpenSSL>=23.2.0,<25
+cffi>=1.15.1
 
 # --- File I/O & Utils ---
 openpyxl==3.1.5

@@ -1,5 +1,6 @@
 import duckdb, hashlib
 from datetime import datetime
+from typing import Optional
 from .utils import WAREHOUSE_PATH
 
 
@@ -47,7 +48,7 @@ def hash_filelike(f) -> str:
     return hasher.hexdigest()
 
 
-def record_audit(source: str, entity: str, rows_in: int, rows_loaded: int, error_count: int, file_hash: str | None):
+def record_audit(source: str, entity: str, rows_in: int, rows_loaded: int, error_count: int, file_hash: Optional[str]):
     con = duckdb.connect(WAREHOUSE_PATH)
     con.execute("INSERT INTO etl.load_audit(source, entity, rows_in, rows_loaded, error_count, file_hash, created_at) VALUES (?,?,?,?,?,?,?)",
                 [source, entity, rows_in, rows_loaded, error_count, file_hash, datetime.utcnow()])
