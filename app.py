@@ -9,7 +9,7 @@ import os
 import numpy as np
 from sqlalchemy import create_engine
 from datetime import datetime
-from etl.utils import WAREHOUSE_PATH, APP_PASSWORD, MAX_UPLOAD_MB
+from etl.utils import WAREHOUSE_PATH, APP_PASSWORD, MAX_UPLOAD_MB, MAX_ROWS, MAX_COLUMNS
 from etl.ingest import suggest_column_mapping
 from etl.transform import transform_with_mapping, clean_dataframe
 from etl.validate import validate_dataframe, summarize_errors
@@ -568,23 +568,11 @@ def inject_custom_css(dark_mode=False):
             padding: 0 0.25rem;
         }}
 
-        /* ========== Responsive: Sidebar & navigation (breadcrumb menu) ========== */
-        @media (max-width: 768px) {{
-            .main .block-container {{
-                padding: 1rem 1rem 1.5rem 1rem;
-            }}
-            .dashboard-header {{
-                padding: 1.25rem 1.25rem;
-            }}
-            .dashboard-header h1 {{
-                font-size: 1.35rem;
-            }}
-            .dashboard-header p {{
-                font-size: 0.85rem;
-            }}
-        }}
-
-        /* Sidebar: prevent squish and overflow */
+        /* ========================================
+           MOBILE RESPONSIVE DESIGN
+           ======================================== */
+        
+        /* Sidebar base styling */
         [data-testid="stSidebar"] {{
             min-width: 220px;
             max-width: 320px;
@@ -593,34 +581,347 @@ def inject_custom_css(dark_mode=False):
             overflow-y: auto;
             overflow-x: hidden;
         }}
-
-        /* Navigation menu (breadcrumb): wrap and scale on narrow sidebar */
+        
+        /* Navigation menu base */
         [data-testid="stSidebar"] .stRadio > div {{
             flex-wrap: wrap;
         }}
         [data-testid="stSidebar"] .stRadio > div > label {{
             min-width: 0;
             padding: 0.65rem 0.75rem;
-            font-size: 1rem;
+            font-size: 0.9rem;
         }}
-        @media (max-width: 640px) {{
-            [data-testid="stSidebar"] .stRadio > div > label {{
-                font-size: 0.95rem;
-                padding: 0.55rem 0.65rem;
+        
+        /* ===== Tablet (768px - 1024px) ===== */
+        @media (max-width: 1024px) {{
+            .main .block-container {{
+                padding: 1rem 1.5rem 1.5rem 1.5rem;
             }}
-            [data-testid="stSidebar"] .stRadio > div > label::first-letter {{
-                font-size: 1.4em;
+            
+            .kpi-card {{
+                padding: 1rem 1.25rem;
             }}
-            .sidebar-logo h2 {{
+            
+            .kpi-value {{
+                font-size: 1.4rem;
+            }}
+            
+            .kpi-icon {{
+                width: 42px;
+                height: 42px;
+                font-size: 1.2rem;
+            }}
+            
+            .chart-container {{
+                padding: 1rem;
+            }}
+            
+            .chart-title {{
+                font-size: 0.9rem;
+            }}
+        }}
+        
+        /* ===== Mobile Large (576px - 768px) ===== */
+        @media (max-width: 768px) {{
+            .main .block-container {{
+                padding: 0.75rem 1rem 1.5rem 1rem;
+            }}
+            
+            .dashboard-header {{
+                padding: 1.25rem 1rem;
+                border-radius: 12px;
+                margin-bottom: 1rem;
+            }}
+            
+            .dashboard-header h1 {{
+                font-size: 1.25rem;
+            }}
+            
+            .dashboard-header p {{
+                font-size: 0.8rem;
+            }}
+            
+            .section-header {{
+                font-size: 0.9rem;
+                margin: 1rem 0 0.75rem 0;
+            }}
+            
+            .kpi-card {{
+                padding: 0.85rem 1rem;
+                border-radius: 10px;
+                margin-bottom: 0.5rem;
+            }}
+            
+            .kpi-icon {{
+                width: 38px;
+                height: 38px;
                 font-size: 1.1rem;
+                margin-bottom: 0.75rem;
+                border-radius: 10px;
             }}
+            
+            .kpi-label {{
+                font-size: 0.65rem;
+            }}
+            
+            .kpi-value {{
+                font-size: 1.25rem;
+                margin-bottom: 0.25rem;
+            }}
+            
+            .chart-container {{
+                padding: 0.85rem;
+                border-radius: 10px;
+                margin-bottom: 0.75rem;
+            }}
+            
+            .chart-title {{
+                font-size: 0.85rem;
+                padding-bottom: 0.5rem;
+                margin-bottom: 0.75rem;
+            }}
+            
+            .dataframe-container {{
+                padding: 0.5rem;
+                border-radius: 10px;
+            }}
+            
+            /* Tabs mobile styling */
+            .stTabs [data-baseweb="tab-list"] {{
+                flex-wrap: wrap;
+                padding: 0.25rem;
+                gap: 0.15rem;
+            }}
+            
+            .stTabs [data-baseweb="tab"] {{
+                padding: 0.5rem 0.75rem;
+                font-size: 0.75rem;
+                flex: 1 1 auto;
+                min-width: 80px;
+                text-align: center;
+            }}
+            
+            /* Button mobile */
+            .stButton > button {{
+                padding: 0.5rem 1rem;
+                font-size: 0.8rem;
+                width: 100%;
+            }}
+            
+            /* Sidebar mobile */
+            .sidebar-logo {{
+                padding: 0.75rem 0.5rem 1rem 0.5rem;
+            }}
+            
             .sidebar-logo-icon {{
                 width: 44px;
                 height: 44px;
                 font-size: 1.25rem;
             }}
+            
+            .sidebar-logo h2 {{
+                font-size: 1.1rem;
+            }}
+            
+            .sidebar-logo p {{
+                font-size: 0.7rem;
+            }}
+            
+            .sidebar-metric {{
+                padding: 0.65rem 0.75rem;
+            }}
+            
             .sidebar-metric-value {{
                 font-size: 1.15rem;
+            }}
+            
+            .sidebar-section-label {{
+                font-size: 0.6rem;
+            }}
+            
+            [data-testid="stSidebar"] .stRadio > div > label {{
+                font-size: 0.85rem;
+                padding: 0.55rem 0.65rem;
+            }}
+            
+            /* Empty state mobile */
+            .empty-state {{
+                padding: 2rem 1rem;
+            }}
+            
+            .empty-state-icon {{
+                font-size: 2.5rem;
+            }}
+            
+            .empty-state-title {{
+                font-size: 1rem;
+            }}
+        }}
+        
+        /* ===== Mobile Small (< 576px) ===== */
+        @media (max-width: 576px) {{
+            .main .block-container {{
+                padding: 0.5rem 0.75rem 1rem 0.75rem;
+            }}
+            
+            .dashboard-header {{
+                padding: 1rem 0.85rem;
+                border-radius: 10px;
+            }}
+            
+            .dashboard-header h1 {{
+                font-size: 1.1rem;
+            }}
+            
+            .dashboard-header p {{
+                font-size: 0.75rem;
+            }}
+            
+            .section-header {{
+                font-size: 0.85rem;
+            }}
+            
+            .kpi-card {{
+                padding: 0.75rem 0.85rem;
+            }}
+            
+            .kpi-icon {{
+                width: 34px;
+                height: 34px;
+                font-size: 1rem;
+                margin-bottom: 0.5rem;
+            }}
+            
+            .kpi-label {{
+                font-size: 0.6rem;
+            }}
+            
+            .kpi-value {{
+                font-size: 1.1rem;
+            }}
+            
+            .chart-container {{
+                padding: 0.65rem;
+            }}
+            
+            .chart-title {{
+                font-size: 0.8rem;
+            }}
+            
+            /* Make columns stack on very small screens */
+            [data-testid="column"] {{
+                min-width: 100% !important;
+            }}
+            
+            /* Tabs stack vertically on small screens */
+            .stTabs [data-baseweb="tab-list"] {{
+                flex-direction: column;
+            }}
+            
+            .stTabs [data-baseweb="tab"] {{
+                width: 100%;
+                justify-content: center;
+            }}
+            
+            /* File uploader mobile */
+            [data-testid="stFileUploader"] {{
+                padding: 0.75rem;
+            }}
+            
+            /* Sidebar very small */
+            .sidebar-logo-icon {{
+                width: 40px;
+                height: 40px;
+                font-size: 1.1rem;
+            }}
+            
+            .sidebar-logo h2 {{
+                font-size: 1rem;
+            }}
+            
+            [data-testid="stSidebar"] .stRadio > div > label {{
+                font-size: 0.8rem;
+                padding: 0.5rem 0.55rem;
+            }}
+            
+            .sidebar-metric-value {{
+                font-size: 1rem;
+            }}
+        }}
+        
+        /* ===== Touch-friendly interactions ===== */
+        @media (hover: none) and (pointer: coarse) {{
+            /* Larger touch targets */
+            .stButton > button {{
+                min-height: 44px;
+            }}
+            
+            .stTabs [data-baseweb="tab"] {{
+                min-height: 44px;
+            }}
+            
+            [data-testid="stSidebar"] .stRadio > div > label {{
+                min-height: 44px;
+                display: flex;
+                align-items: center;
+            }}
+            
+            /* Remove hover effects on touch */
+            .kpi-card:hover {{
+                transform: none;
+            }}
+            
+            .stButton > button:hover {{
+                transform: none;
+            }}
+        }}
+        
+        /* ===== Landscape phone orientation ===== */
+        @media (max-height: 500px) and (orientation: landscape) {{
+            .dashboard-header {{
+                padding: 0.75rem 1rem;
+                margin-bottom: 0.75rem;
+            }}
+            
+            .dashboard-header h1 {{
+                font-size: 1rem;
+            }}
+            
+            .dashboard-header p {{
+                display: none;
+            }}
+            
+            .sidebar-logo {{
+                padding: 0.5rem;
+            }}
+            
+            .sidebar-logo p {{
+                display: none;
+            }}
+            
+            .sidebar-divider {{
+                margin: 0.5rem 0;
+            }}
+        }}
+        
+        /* ===== Print styles ===== */
+        @media print {{
+            [data-testid="stSidebar"] {{
+                display: none !important;
+            }}
+            
+            .dashboard-header {{
+                background: #0f766e !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }}
+            
+            .kpi-card {{
+                break-inside: avoid;
+            }}
+            
+            .chart-container {{
+                break-inside: avoid;
             }}
         }}
     </style>
@@ -736,9 +1037,13 @@ def safe_read_csv(file_or_path, max_rows=None):
     - Auto-delimiter detection (comma, semicolon, tab, pipe)
     - Missing values and mixed types
     - Large files with row limits
+    - Column count limits
     
     Returns: (DataFrame, error_message) - error_message is None on success
     """
+    # Use global limits if not specified
+    row_limit = max_rows if max_rows else MAX_ROWS
+    
     # List of encodings to try in order of preference
     encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
     # Common delimiters to try
@@ -753,20 +1058,22 @@ def safe_read_csv(file_or_path, max_rows=None):
                 if hasattr(file_or_path, 'seek'):
                     file_or_path.seek(0)
                 
-                # Read with current encoding and delimiter
+                # Read with current encoding and delimiter (with row limit)
                 df = pd.read_csv(
                     file_or_path,
                     encoding=encoding,
                     delimiter=delimiter,
                     on_bad_lines='warn',  # Don't fail on bad lines
                     low_memory=False,  # Prevent dtype warnings
-                    nrows=max_rows  # Optional row limit
+                    nrows=row_limit  # Enforce row limit
                 )
                 
                 # Validate: must have at least 1 column and some data
                 if len(df.columns) >= 1 and len(df) > 0:
-                    # Check if delimiter was correct (more than 1 column usually means success)
-                    # Single column might be wrong delimiter, but accept if it's the only result
+                    # SAFETY: Check column limit
+                    if len(df.columns) > MAX_COLUMNS:
+                        return None, f"Too many columns ({len(df.columns)}). Maximum allowed: {MAX_COLUMNS}"
+                    
                     return df, None
                     
             except UnicodeDecodeError:
@@ -775,6 +1082,8 @@ def safe_read_csv(file_or_path, max_rows=None):
             except pd.errors.ParserError as e:
                 last_error = f"Parser error with delimiter '{delimiter}': {str(e)[:100]}"
                 continue
+            except MemoryError:
+                return None, f"File too large to process. Try a smaller file or reduce rows."
             except Exception as e:
                 last_error = str(e)[:200]
                 continue
@@ -1477,8 +1786,17 @@ elif page == "↓ Data Import":
     with source_tabs[0]:
         st.markdown(render_section_header("📤", "Upload File"), unsafe_allow_html=True)
         
-        # SAFETY: Show supported formats and limits
-        st.caption(f"Supported: CSV, Excel (XLSX) • Max size: {MAX_UPLOAD_MB} MB • Any column structure accepted")
+        # SAFETY: Show supported formats and limits clearly
+        st.markdown(f"""
+        <div style="background: var(--accent-light); border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1rem; border: 1px solid var(--border);">
+            <div style="font-size: 0.8rem; color: var(--text-secondary);">
+                <strong>Supported:</strong> CSV, Excel (XLSX) &nbsp;•&nbsp; 
+                <strong>Max Size:</strong> {MAX_UPLOAD_MB} MB &nbsp;•&nbsp; 
+                <strong>Max Rows:</strong> {MAX_ROWS:,} &nbsp;•&nbsp; 
+                <strong>Max Columns:</strong> {MAX_COLUMNS}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         
         up = st.file_uploader("Drop your CSV or Excel file here", type=["csv", "xlsx"], key="file_upload")
         
@@ -1520,7 +1838,13 @@ elif page == "↓ Data Import":
             
             # SAFETY: Always show success feedback with details
             col_analysis = get_col_analysis()
-            st.success(f"✅ Successfully loaded **{len(df):,} rows** × **{len(df.columns)} columns** from `{up.name}`")
+            
+            # Check if data was truncated due to row limit
+            truncation_note = ""
+            if len(df) >= MAX_ROWS:
+                truncation_note = f" (limited to {MAX_ROWS:,} rows)"
+            
+            st.success(f"✅ Successfully loaded **{len(df):,} rows** × **{len(df.columns)} columns** from `{up.name}`{truncation_note}")
             
             # SAFETY: Show column type summary for user awareness
             if col_analysis:

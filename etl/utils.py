@@ -9,7 +9,9 @@ TZ = os.getenv("APP_TZ", "Asia/Karachi")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 
 # Upload/ingest controls
-MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "200"))  # Max file size in MB
+MAX_ROWS = int(os.getenv("MAX_ROWS", "500000"))  # Max rows allowed (500K default)
+MAX_COLUMNS = int(os.getenv("MAX_COLUMNS", "100"))  # Max columns allowed
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "50000"))
 
 # CORS origins (comma separated)
